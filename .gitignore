@@ -114,3 +114,6 @@ client/public/__manus__/version.json
 
 # Vercel build output
 .vercel/
+
+.vercel
+.env*
