@@ -16,43 +16,50 @@ interface ThemeProviderProps {
   switchable?: boolean;
 }
 
-export function ThemeProvider({
-  children,
-  defaultTheme = "light",
-  switchable = false,
-}: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (switchable) {
-      const stored = localStorage.getItem("theme");
-      return (stored as Theme) || defaultTheme;
-    }
-    return defaultTheme;
-  });
+function readStoredTheme(): Theme | null {
+  try {
+    const stored = window.localStorage.getItem("theme");
+    return stored === "light" || stored === "dark" ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function systemTheme(fallback: Theme): Theme {
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return fallback;
+  }
+}
+
+export function ThemeProvider({ children, defaultTheme = "light", switchable = false }: ThemeProviderProps) {
+  const [theme, setTheme] = useState<Theme>(() =>
+    switchable ? readStoredTheme() ?? systemTheme(defaultTheme) : defaultTheme
+  );
 
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === "dark") {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
-    }
-
-    if (switchable) {
-      localStorage.setItem("theme", theme);
-    }
-  }, [theme, switchable]);
+    root.classList.toggle("dark", theme === "dark");
+    root.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#121816" : "#F7F8F5");
+  }, [theme]);
 
   const toggleTheme = switchable
     ? () => {
-        setTheme(prev => (prev === "light" ? "dark" : "light"));
+        setTheme(prev => {
+          const next = prev === "light" ? "dark" : "light";
+          try {
+            window.localStorage.setItem("theme", next);
+          } catch {
+            // ignore
+          }
+          return next;
+        });
       }
     : undefined;
 
-  return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, switchable }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  return <ThemeContext.Provider value={{ theme, toggleTheme, switchable }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() {

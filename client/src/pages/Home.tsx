@@ -1,18 +1,28 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowLeft, ArrowRight, Check, Compass, Footprints, Mountain, Plus, Send, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { ArrowDown, ArrowLeft, ArrowRight, Check, Compass, Footprints, Moon, Mountain, Plus, Send, Sparkles, Square, Sun, Upload } from "lucide-react";
+import { toast } from "sonner";
+import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
+import { streamChat } from "@/lib/streamChat";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   countStreak,
+  exportBackup,
   getLocalDateKey,
   initialPrompt,
+  journeyFromPlan,
+  parseBackup,
   readCoachState,
   writeCoachState,
   type ChatTurn,
+  type CoachState,
+  type Feeling,
   type GoalPlan,
   type SavedJourney,
 } from "@/lib/coachStorage";
 import PlanCard from "@/features/coach/PlanCard";
-import ProgressCard from "@/features/progress/ProgressCard";
+import ProgressCard, { type StepMode } from "@/features/progress/ProgressCard";
+import HeroArt from "@/features/home/HeroArt";
 
 type Mode = "home" | "chat";
 const examples = ["에베레스트에 오르고 싶어요", "새로운 취미를 찾고 싶어요", "내 일을 바꿔보고 싶어요"];
@@ -21,31 +31,39 @@ function makeTurn(role: ChatTurn["role"], content: string): ChatTurn {
   return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role, content };
 }
 
+const toMessages = (turns: ChatTurn[]) =>
+  turns.filter(turn => turn.id !== "welcome").slice(-18).map(({ role, content }) => ({ role, content }));
+
 export default function Home() {
-  const [saved, setSaved] = useState(() => readCoachState());
-  const [mode, setMode] = useState<Mode>(() => {
-    const initial = readCoachState();
-    return initial.journey ? "home" : initial.turns.length > 0 ? "chat" : "home";
-  });
-  const [turns, setTurns] = useState<ChatTurn[]>(() => readCoachState().turns);
+  const { theme, toggleTheme } = useTheme();
+  const [initial] = useState(() => readCoachState());
+  const [journey, setJourney] = useState<SavedJourney | null>(initial.journey);
+  const [mode, setMode] = useState<Mode>(initial.journey ? "home" : initial.turns.length > 0 ? "chat" : "home");
+  const [turns, setTurns] = useState<ChatTurn[]>(initial.turns);
   const [draft, setDraft] = useState("");
+  const [chatPending, setChatPending] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
   const [suggestion, setSuggestion] = useState<GoalPlan | null>(null);
   const [messageError, setMessageError] = useState("");
   const [planError, setPlanError] = useState("");
   const [safetyNotice, setSafetyNotice] = useState("");
+  const [stepPending, setStepPending] = useState<StepMode | null>(null);
+  const [stepError, setStepError] = useState("");
   const [storageNotice, setStorageNotice] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const conversationVersionRef = useRef(0);
-  const chatMutation = trpc.coach.chat.useMutation();
   const planMutation = trpc.coach.plan.useMutation();
-  const journey = saved.journey;
+  const stepMutation = trpc.coach.nextStep.useMutation();
+
   const todayKey = getLocalDateKey();
-  const todayDone = !!journey?.completions.some(record => record.date === todayKey);
-  const streak = useMemo(() => journey ? countStreak(journey.completions) : 0, [journey]);
+  const todayRecord = journey?.completions.find(r => r.date === todayKey && r.stepNumber === journey.stepNumber) ?? null;
+  const streak = useMemo(() => (journey ? countStreak(journey.completions) : 0), [journey]);
   const userTurns = turns.filter(turn => turn.role === "user").length;
 
   useEffect(() => {
-    writeCoachState({ turns, journey: saved.journey });
+    writeCoachState({ turns, journey });
     try {
       const probe = "cheotbal-storage-check";
       window.localStorage.setItem(probe, "1");
@@ -54,11 +72,36 @@ export default function Home() {
     } catch {
       setStorageNotice(true);
     }
-  }, [turns, saved.journey]);
+  }, [turns, journey]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [turns, suggestion]);
+  }, [turns, suggestion, streamingText]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    document.title = "첫걸음 — 목표 발견 & 실행 코치";
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("start") === "chat") {
+      window.history.replaceState(null, "", "/app");
+      openChat();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const resetConversationRequests = () => {
+    conversationVersionRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    planMutation.reset();
+    setChatPending(false);
+    setStreamingText("");
+    setSuggestion(null);
+    setMessageError("");
+    setPlanError("");
+    setSafetyNotice("");
+  };
 
   const openChat = () => {
     if (turns.length === 0) setTurns([initialPrompt]);
@@ -69,102 +112,86 @@ export default function Home() {
   };
 
   const startFreshChat = () => {
-    conversationVersionRef.current += 1;
-    chatMutation.reset();
-    planMutation.reset();
+    resetConversationRequests();
     setTurns([initialPrompt]);
-    setSuggestion(null);
-    setMessageError("");
-    setPlanError("");
-    setSafetyNotice("");
     setDraft("");
     setMode("chat");
   };
 
-  const sendMessage = async (text: string, existingUserTurn?: ChatTurn, baseTurns?: ChatTurn[]) => {
-    const trimmed = text.trim();
-    if (!trimmed || chatMutation.isPending) return;
-    const nextTurns = existingUserTurn ? turns : [...(baseTurns ?? turns), makeTurn("user", trimmed)];
-    if (!existingUserTurn) setTurns(nextTurns);
+  /** Sends `history` (which must end with the user's turn) and appends the streamed reply. */
+  const requestReply = async (history: ChatTurn[]) => {
     const requestVersion = conversationVersionRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setChatPending(true);
+    setStreamingText("");
     setMessageError("");
     try {
-      const result = await chatMutation.mutateAsync({
-        messages: nextTurns.slice(-18).map(({ role, content }) => ({ role, content })),
-      });
+      const answer = await streamChat(toMessages(history), setStreamingText, controller.signal);
       if (requestVersion !== conversationVersionRef.current) return;
-      setTurns([...nextTurns, makeTurn("assistant", result.answer)]);
-      setDraft("");
+      setTurns([...history, makeTurn("assistant", answer)]);
     } catch (error) {
-      if (requestVersion !== conversationVersionRef.current) return;
+      if (requestVersion !== conversationVersionRef.current || controller.signal.aborted) return;
       setMessageError(error instanceof Error ? error.message : "잠시 후 다시 시도해 주세요.");
+    } finally {
+      if (requestVersion === conversationVersionRef.current) {
+        setChatPending(false);
+        setStreamingText("");
+        abortRef.current = null;
+      }
     }
+  };
+
+  const stopReply = () => {
+    const partial = streamingText.trim();
+    conversationVersionRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setChatPending(false);
+    setStreamingText("");
+    if (partial) setTurns(current => [...current, makeTurn("assistant", partial)]);
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const lastTurn = turns.at(-1);
-    if (lastTurn?.role === "user" && lastTurn.content === draft.trim()) {
-      void sendMessage(lastTurn.content, lastTurn);
-      return;
-    }
-    if (lastTurn?.role === "user") {
-      const baseTurns = turns.slice(0, -1);
-      setTurns(baseTurns);
-      void sendMessage(draft, undefined, baseTurns);
-      return;
-    }
-    void sendMessage(draft);
+    const text = draft.trim();
+    if (!text || chatPending) return;
+    // If the last reply failed, replace the unanswered user turn instead of stacking another one.
+    const base = turns.at(-1)?.role === "user" ? turns.slice(0, -1) : turns;
+    const next = [...base, makeTurn("user", text)];
+    setTurns(next);
+    setDraft("");
+    void requestReply(next);
+  };
+
+  const retryReply = () => {
+    if (turns.at(-1)?.role === "user") void requestReply(turns);
   };
 
   const startWithExample = (example: string) => {
-    conversationVersionRef.current += 1;
-    chatMutation.reset();
-    planMutation.reset();
-    const requestVersion = conversationVersionRef.current;
+    resetConversationRequests();
     const seed = [initialPrompt, makeTurn("user", example)];
     setTurns(seed);
-    setSuggestion(null);
-    setMessageError("");
-    setPlanError("");
-    setSafetyNotice("");
     setDraft("");
     setMode("chat");
-    void (async () => {
-      try {
-        const result = await chatMutation.mutateAsync({ messages: seed.map(({ role, content }) => ({ role, content })) });
-        if (requestVersion !== conversationVersionRef.current) return;
-        setTurns([...seed, makeTurn("assistant", result.answer)]);
-      } catch (error) {
-        if (requestVersion !== conversationVersionRef.current) return;
-        setMessageError(error instanceof Error ? error.message : "잠시 후 다시 시도해 주세요.");
-      }
-    })();
+    void requestReply(seed);
   };
 
   const makePlan = async () => {
-    if (chatMutation.isPending || planMutation.isPending) return;
+    if (chatPending || planMutation.isPending) return;
     const requestVersion = conversationVersionRef.current;
     setPlanError("");
     setSafetyNotice("");
     try {
-      const result = await planMutation.mutateAsync({
-        messages: turns.filter(turn => turn.role !== "assistant" || turn.id !== "welcome").slice(-18).map(({ role, content }) => ({ role, content })),
-      });
+      const result = await planMutation.mutateAsync({ messages: toMessages(turns) });
       if (requestVersion !== conversationVersionRef.current) return;
       if (!result.safe) {
         setSuggestion(null);
         setSafetyNotice(result.message);
         return;
       }
-      setSuggestion({
-        goal: result.goal,
-        why: result.why,
-        firstStep: result.firstStep,
-        minutes: result.minutes,
-        criteria: result.criteria,
-        nextSteps: result.nextSteps,
-      });
+      const { safe: _safe, ...plan } = result;
+      setSuggestion(plan);
     } catch (error) {
       if (requestVersion !== conversationVersionRef.current) return;
       setPlanError(error instanceof Error ? error.message : "대화를 그대로 두고 다시 시도해 주세요.");
@@ -173,31 +200,112 @@ export default function Home() {
 
   const savePlan = () => {
     if (!suggestion) return;
-    if (saved.journey && !window.confirm("새 목표로 바꾸면 기존 여정의 완료 기록은 지워져요. 새 목표로 바꿀까요?")) return;
-    const nextJourney: SavedJourney = { plan: suggestion, startedAt: new Date().toISOString(), completions: [] };
-    setSaved(current => ({ ...current, journey: nextJourney }));
+    if (journey && !window.confirm("새 목표로 바꾸면 기존 여정의 완료 기록은 지워져요. 새 목표로 바꿀까요?")) return;
+    setJourney(journeyFromPlan({ ...suggestion, nextSteps: suggestion.nextSteps.map(s => s.trim()).filter(Boolean) }));
     setSuggestion(null);
+    setStepError("");
     setMode("home");
+    requestAnimationFrame(() => document.getElementById("journey-example")?.scrollIntoView({ behavior: "smooth" }));
   };
 
   const completeToday = () => {
-    if (!journey || todayDone) return;
-    const nextJourney = {
+    if (!journey || todayRecord) return;
+    setJourney({
       ...journey,
-      completions: [...journey.completions, { id: `${Date.now()}`, date: todayKey, note: journey.plan.firstStep }],
-    };
-    setSaved(current => ({ ...current, journey: nextJourney }));
+      completions: [
+        ...journey.completions,
+        { id: `${Date.now()}`, date: todayKey, note: journey.current.text, stepNumber: journey.stepNumber },
+      ],
+    });
+  };
+
+  const reflect = (recordId: string, feeling: Feeling | undefined, reflection: string) => {
+    setJourney(current =>
+      current && {
+        ...current,
+        completions: current.completions.map(record =>
+          record.id === recordId ? { ...record, feeling, reflection: reflection || undefined } : record
+        ),
+      }
+    );
   };
 
   const undoToday = () => {
-    if (!journey) return;
-    const nextJourney = { ...journey, completions: journey.completions.filter(record => record.date !== todayKey) };
-    setSaved(current => ({ ...current, journey: nextJourney }));
+    if (!journey || !todayRecord) return;
+    setJourney({ ...journey, completions: journey.completions.filter(record => record.id !== todayRecord.id) });
+  };
+
+  const requestStep = async (stepMode: StepMode) => {
+    if (!journey || stepPending) return;
+    setStepPending(stepMode);
+    setStepError("");
+    try {
+      const result = await stepMutation.mutateAsync({
+        mode: stepMode,
+        goal: journey.plan.goal,
+        why: journey.plan.why,
+        current: journey.current,
+        history: journey.completions.slice(-12).map(record => ({
+          step: record.note,
+          date: record.date,
+          feeling: record.feeling,
+          reflection: record.reflection,
+        })),
+        upcoming: journey.upcoming.slice(0, 3),
+      });
+      if (!result.safe) {
+        setStepError(result.message);
+        return;
+      }
+      setJourney(current =>
+        current && {
+          ...current,
+          current: { text: result.text, minutes: result.minutes, criteria: result.criteria },
+          coachNote: result.coachNote,
+          stepNumber: stepMode === "next" ? current.stepNumber + 1 : current.stepNumber,
+          upcoming: stepMode === "next" ? current.upcoming.slice(1) : current.upcoming,
+        }
+      );
+      toast.success(stepMode === "next" ? "다음 걸음이 준비됐어요" : "조금 더 가벼운 걸음으로 바꿨어요");
+    } catch (error) {
+      setStepError(error instanceof Error ? error.message : "잠시 후 다시 시도해 주세요.");
+    } finally {
+      setStepPending(null);
+    }
   };
 
   const resetJourney = () => {
     if (!window.confirm("이 여정과 완료 기록을 지울까요? 대화 기록은 남아 있어요.")) return;
-    setSaved(current => ({ ...current, journey: null }));
+    setJourney(null);
+    setStepError("");
+  };
+
+  const exportData = () => {
+    const blob = new Blob([exportBackup({ turns, journey })], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `cheotbal-backup-${todayKey}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast.success("기록을 파일로 저장했어요");
+  };
+
+  const importData = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const restored: CoachState = parseBackup(await file.text());
+      if ((journey || turns.length > 1) && !window.confirm("지금 기록을 백업 파일 내용으로 바꿀까요?")) return;
+      resetConversationRequests();
+      setTurns(restored.turns);
+      setJourney(restored.journey);
+      setMode("home");
+      toast.success("백업을 불러왔어요");
+    } catch (error) {
+      toast.error(error instanceof Error && error.message.includes("백업") ? error.message : "백업 파일을 읽지 못했어요.");
+    }
   };
 
   return (
@@ -209,8 +317,15 @@ export default function Home() {
         <div className="header-right">
           {journey && mode === "chat" && <button className="header-link" onClick={() => setMode("home")}><ArrowLeft size={15} /> 내 여정</button>}
           <span className="header-caption"><span className="status-dot" /> 나를 알아가는 시간</span>
+          {toggleTheme && (
+            <button className="theme-toggle" onClick={toggleTheme} aria-label={theme === "dark" ? "밝은 화면으로" : "어두운 화면으로"} title={theme === "dark" ? "밝은 화면" : "어두운 화면"}>
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+          )}
         </div>
       </header>
+
+      <input ref={fileInputRef} type="file" accept="application/json,.json" hidden onChange={event => void importData(event)} />
 
       {mode === "home" ? (
         <main className="home-main">
@@ -220,17 +335,11 @@ export default function Home() {
               <h1>하고 싶은 일,<br />같이 <em>찾아볼까요?</em></h1>
               <p className="hero-description">아직 선명하지 않아도 괜찮아요.<br className="desktop-break" /> 대화하다 보면, 오늘의 첫걸음이 보여요.</p>
               <button className="button button-primary hero-cta" onClick={openChat}>
-                AI와 이야기 시작하기 <ArrowRight size={18} />
+                {turns.length > 1 ? "이어서 이야기하기" : "AI와 이야기 시작하기"} <ArrowRight size={18} />
               </button>
               <div className="privacy-note"><Check size={14} /> 로그인 없이, 이 기기에만 기록돼요</div>
             </div>
-            <div className="hero-art" aria-hidden="true">
-              <div className="art-sun" />
-              <div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" />
-              <img className="mountain-lines" src="/manus-storage/async-images/ULnVVckihxrsF8FyPrp7mR/image-1.webp" alt="" />
-              <div className="art-caption"><Mountain size={14} /> 큰 꿈도, 한 걸음부터</div>
-              <div className="art-pin"><span>오늘의 시작</span><i /></div>
-            </div>
+            <HeroArt />
             <a className="scroll-cue" href="#journey-example"><ArrowDown size={15} /> 천천히 둘러보기</a>
           </section>
 
@@ -242,12 +351,18 @@ export default function Home() {
               </div>
               <ProgressCard
                 journey={journey}
-                todayDone={todayDone}
+                todayRecord={todayRecord}
                 streak={streak}
+                stepPending={stepPending}
+                stepError={stepError}
                 onComplete={completeToday}
+                onReflect={reflect}
                 onUndoToday={undoToday}
+                onRequestStep={mode => void requestStep(mode)}
                 onExplore={startFreshChat}
                 onReset={resetJourney}
+                onExport={exportData}
+                onImport={() => fileInputRef.current?.click()}
               />
             </section>
           ) : (
@@ -276,10 +391,14 @@ export default function Home() {
               <div className="how-connector" />
               <div className="how-step"><span>02</span><strong>오늘 할 수 있는 일</strong><p>너무 크지 않은 첫 행동을<br />함께 골라요.</p></div>
               <div className="how-connector" />
-              <div className="how-step"><span>03</span><strong>조금씩 이어가기</strong><p>해낸 날을 가볍게 기록하고<br />다음 걸음을 정해요.</p></div>
+              <div className="how-step"><span>03</span><strong>조금씩 이어가기</strong><p>해낸 날과 느낌을 기록하면<br />다음 걸음을 맞춰 드려요.</p></div>
             </div>
           </section>
-          <footer className="site-footer"><span>첫걸음 · 나만의 속도로</span><span>작은 시작도, 시작이니까요.</span></footer>
+          <footer className="site-footer">
+            <Link href="/" className="footer-link">첫걸음 소개</Link>
+            {!journey && <button className="footer-link" onClick={() => fileInputRef.current?.click()}><Upload size={11} /> 백업 불러오기</button>}
+            <span>작은 시작도, 시작이니까요.</span>
+          </footer>
         </main>
       ) : (
         <main className="chat-main">
@@ -298,14 +417,23 @@ export default function Home() {
                   <div className="message-bubble">{turn.content}</div>
                 </div>
               ))}
-              {chatMutation.isPending && <div className="message-row assistant"><span className="assistant-avatar"><span className="brand-mark small"><span /><i /></span></span><div className="message-bubble typing"><i /><i /><i /><span>마음을 정리하고 있어요</span></div></div>}
+              {chatPending && (
+                <div className="message-row assistant">
+                  <span className="assistant-avatar"><span className="brand-mark small"><span /><i /></span></span>
+                  {streamingText ? (
+                    <div className="message-bubble streaming">{streamingText}<span className="caret" aria-hidden="true" /></div>
+                  ) : (
+                    <div className="message-bubble typing"><i /><i /><i /><span>마음을 정리하고 있어요</span></div>
+                  )}
+                </div>
+              )}
               <div ref={bottomRef} />
             </div>
-            {messageError && <div className="inline-error" role="alert">{messageError}<button onClick={() => void sendMessage(turns.at(-1)?.content ?? draft, turns.at(-1))}>다시 시도</button></div>}
+            {messageError && <div className="inline-error" role="alert">{messageError}<button onClick={retryReply}>다시 시도</button></div>}
             {userTurns > 0 && !suggestion && (
               <div className="plan-prompt">
                 <span>하고 싶은 일이 조금 보이기 시작했나요?</span>
-                <button onClick={() => void makePlan()} disabled={planMutation.isPending || chatMutation.isPending}>
+                <button onClick={() => void makePlan()} disabled={planMutation.isPending || chatPending}>
                   {planMutation.isPending ? "첫걸음을 정리하고 있어요…" : "이 대화로 첫걸음 정리하기"}<ArrowRight size={15} />
                 </button>
               </div>
@@ -321,15 +449,18 @@ export default function Home() {
                 value={draft}
                 onChange={event => setDraft(event.target.value.slice(0, 1200))}
                 onKeyDown={event => {
-                  if (event.key === "Enter" && !event.shiftKey) {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     event.currentTarget.form?.requestSubmit();
                   }
                 }}
                 placeholder="마음에 떠오르는 걸 적어보세요"
-                disabled={chatMutation.isPending}
               />
-              <button className="send-button" type="submit" disabled={!draft.trim() || chatMutation.isPending} aria-label="메시지 보내기"><Send size={17} /></button>
+              {chatPending ? (
+                <button className="send-button stop" type="button" onClick={stopReply} aria-label="답변 멈추기"><Square size={13} fill="currentColor" /></button>
+              ) : (
+                <button className="send-button" type="submit" disabled={!draft.trim()} aria-label="메시지 보내기"><Send size={17} /></button>
+              )}
             </form>}
             {!suggestion && <p className="composer-caption">Shift + Enter로 줄바꿈 · 이야기는 이 브라우저에 저장돼요</p>}
           </section>
@@ -337,8 +468,7 @@ export default function Home() {
           <div className="chat-bottom-note"><span className="privacy-shield"><Check size={12} /></span> 답변을 만들기 위해 대화가 AI에 전달되고, 기록은 이 브라우저에 저장돼요. 언제든 멈출 수 있어요.</div>
         </main>
       )}
-      <button className="floating-new" onClick={startFreshChat} aria-label="새 대화 시작"><Plus size={19} /></button>
-      <div className="page-spark" aria-hidden="true"><span /><span /><span /></div>
+      <button className={`floating-new${mode === "chat" ? " in-chat" : ""}`} onClick={startFreshChat} aria-label="새 대화 시작" title="새 대화 시작"><Plus size={19} /></button>
     </div>
   );
 }
