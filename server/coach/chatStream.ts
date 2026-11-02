@@ -1,10 +1,10 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
-import { conversationSchema } from "../coachRouter";
+import { cluesSchema, conversationSchema } from "../coachRouter";
 import { MissingApiKeyError, streamChatReply } from "./ai";
 import { clientIp, RATE_LIMIT_MESSAGE, takeToken } from "./rateLimit";
 
-const bodySchema = z.object({ messages: conversationSchema });
+const bodySchema = z.object({ messages: conversationSchema, clues: cluesSchema });
 
 /**
  * POST /api/coach/chat — streams the coach's reply as plain UTF-8 text chunks.
@@ -43,7 +43,8 @@ export async function handleChatStream(req: Request, res: Response) {
         }
         res.write(text);
       },
-      abort.signal
+      abort.signal,
+      parsed.data.clues
     );
     if (!started) {
       res.status(502).json({ message: "AI가 답변을 보내지 않았어요. 다시 시도해 주세요." });

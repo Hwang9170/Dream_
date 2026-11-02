@@ -81,7 +81,24 @@
 .lp-journey-list { display: grid; gap: 14px; margin: 40px auto 0; max-width: 880px; }
 .lp-journey { display: flex; align-items: center; gap: 16px; padding: 18px 20px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line-strong); }
 .lp-journey-path { flex: 1; display: grid; grid-template-columns: 1.1fr 24px 1fr 24px 1fr; align-items: center; gap: 10px; font-size: 15px; }
-.lp-journey-goal { font-weight: 700; letter-spacing: -.03em; }
+.lp-journey-goal { display: grid; gap: 2px; font-weight: 700; letter-spacing: -.03em; line-height: 1.45; }
+.lp-journey-goal small { color: var(--text-4); }
+
+/* fit bars (hero phone + step sample) */
+.lp-fit { display: flex; align-items: center; gap: 8px; }
+.lp-fit-bar { flex: 1; height: 7px; border-radius: 99px; background: var(--heat-0); overflow: hidden; }
+.lp-fit-bar i { display: block; height: 100%; border-radius: inherit; background: var(--cool); }
+.lp-fit.warm .lp-fit-bar i { background: linear-gradient(90deg, var(--warm-soft), var(--warm)); }
+.lp-fit.hot .lp-fit-bar i { background: linear-gradient(90deg, var(--warm), var(--hot)); }
+.lp-fit b { font-size: 12px; min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+.lp-fit.hot b { color: var(--hot); }
+.lp-fit.warm b { color: var(--warm); }
+.lp-fit.cool b { color: var(--cool); }
+.lp-plan.muted { background: var(--surface); border-color: var(--line-strong); padding: 10px 13px; gap: 5px; animation-delay: 1.4s; }
+.lp-plan.muted + .lp-plan.muted { animation-delay: 1.6s; }
+.lp-plan.muted strong { font-size: 12.5px; }
+.lp-plan strong.dropped { color: var(--text-3); text-decoration: line-through; }
+.lp-mini-fits { width: 100%; display: grid; gap: 10px; }
 .lp-journey-step, .lp-journey-next { display: grid; gap: 2px; color: var(--text-2); line-height: 1.45; }
 .lp-journey-step { color: var(--ink); font-weight: 600; }
 .lp-journey small { font-size: 11px; font-weight: 700; color: var(--brand); }
@@ -89,7 +106,7 @@
 .lp-journey-arrow { height: 2px; background-image: linear-gradient(90deg, var(--brand) 40%, transparent 0); background-size: 7px 2px; position: relative; }
 .lp-journey-arrow::after { content: ""; position: absolute; right: -2px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
 
-.lp-feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 44px; }
+.lp-feature-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 44px; }
 .lp-feature { padding: 24px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line-strong); transition: border-color .2s ease, transform .2s ease; }
 .lp-feature:hover { border-color: var(--brand-line); }
 .lp-feature p { color: var(--text-2); font-size: 15px; line-height: 1.7; margin: 0; }

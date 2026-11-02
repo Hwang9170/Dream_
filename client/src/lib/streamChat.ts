@@ -7,6 +7,7 @@ export type ChatMessage = { role: "assistant" | "user"; content: string };
  */
 export async function streamChat(
   messages: ChatMessage[],
+  clues: string[],
   onUpdate: (fullText: string) => void,
   signal?: AbortSignal
 ): Promise<string> {
@@ -15,7 +16,7 @@ export async function streamChat(
     response = await fetch("/api/coach/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, clues }),
       signal,
     });
   } catch (error) {

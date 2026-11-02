@@ -1,14 +1,14 @@
 import { useMemo } from "react";
-import { getLocalDateKey, type CompletionRecord } from "@/lib/coachStorage";
+import { getLocalDateKey } from "@/lib/dreamStore";
 
 const WEEKS = 6;
 const dayLabels = ["월", "화", "수", "목", "금", "토", "일"];
 
 type Cell = { key: string; date: Date; count: number; future: boolean; today: boolean };
 
-function buildCells(records: CompletionRecord[]): Cell[] {
+function buildCells(dates: string[]): Cell[] {
   const counts = new Map<string, number>();
-  for (const record of records) counts.set(record.date, (counts.get(record.date) ?? 0) + 1);
+  for (const date of dates) counts.set(date, (counts.get(date) ?? 0) + 1);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -27,16 +27,16 @@ function buildCells(records: CompletionRecord[]): Cell[] {
 }
 
 /** Six-week practice heatmap, one column per week (Mon → Sun top to bottom). */
-export default function PracticeCalendar({ records }: { records: CompletionRecord[] }) {
-  const cells = useMemo(() => buildCells(records), [records]);
+export default function PracticeCalendar({ dates }: { dates: string[] }) {
+  const cells = useMemo(() => buildCells(dates), [dates]);
   const activeDays = cells.filter(c => c.count > 0).length;
   const formatter = new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", weekday: "short" });
 
   return (
     <div className="practice-calendar">
       <div className="calendar-head">
-        <span className="eyebrow">최근 6주의 걸음</span>
-        <span className="calendar-summary">{activeDays > 0 ? `${activeDays}일 실천했어요` : "첫 기록을 기다리고 있어요"}</span>
+        <span className="eyebrow">최근 6주의 탐색</span>
+        <span className="calendar-summary">{activeDays > 0 ? `${activeDays}일 움직였어요` : "첫 기록을 기다리고 있어요"}</span>
       </div>
       <div className="calendar-body">
         <div className="calendar-days" aria-hidden="true">
@@ -44,12 +44,12 @@ export default function PracticeCalendar({ records }: { records: CompletionRecor
             <span key={label}>{i % 2 === 0 ? label : ""}</span>
           ))}
         </div>
-        <div className="calendar-grid" role="img" aria-label={`최근 6주 중 ${activeDays}일 실천`}>
+        <div className="calendar-grid" role="img" aria-label={`최근 6주 중 ${activeDays}일 기록`}>
           {cells.map(cell => (
             <span
               key={cell.key}
               className={`calendar-cell level-${Math.min(cell.count, 2)}${cell.future ? " future" : ""}${cell.today ? " today" : ""}`}
-              title={cell.future ? undefined : `${formatter.format(cell.date)} · ${cell.count > 0 ? `${cell.count}번 실천` : "기록 없음"}`}
+              title={cell.future ? undefined : `${formatter.format(cell.date)} · ${cell.count > 0 ? `${cell.count}개 기록` : "기록 없음"}`}
             />
           ))}
         </div>
@@ -59,7 +59,7 @@ export default function PracticeCalendar({ records }: { records: CompletionRecor
         <i className="calendar-cell level-0" />
         <i className="calendar-cell level-1" />
         <i className="calendar-cell level-2" />
-        <span>실천</span>
+        <span>많이</span>
       </div>
     </div>
   );
